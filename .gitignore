@@ -1,0 +1,21 @@
+# local env and secrets
+.env
+data/*
+!data/.gitkeep
+host_key
+host_key.pub
+
+# media — drop your own clip in clips/
+clips/*
+!clips/.gitkeep
+
+# python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ruff_cache/
+.pytest_cache/
+
+# os
+.DS_Store

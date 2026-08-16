@@ -1,0 +1,42 @@
+services:
+  quattro:
+    build: .
+    image: quattro:0.1.0
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 5s
+    environment:
+      VIDEO_PATH: ${VIDEO_PATH:-/clips/video.mp4}
+      HOST: 0.0.0.0
+      PORT: "2222"
+      FPS: ${FPS:-0}
+      GRID_COLS: ${GRID_COLS:-160}
+      HOST_KEY: /data/host_key
+    volumes:
+      - ./clips:/clips:ro
+      - ./data:/data:rw
+    ports:
+      - "${SSH_PUBLIC_PORT:-2222}:2222"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETUID
+      - SETGID
+      - CHOWN
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 1g
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 2222"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 25s
