@@ -23,8 +23,8 @@ fi
 # Drop root if the image started as uid 0 (volume perms are then fixed first).
 if [ "$(id -u)" -eq 0 ]; then
     chown -R watch:watch "$DATA_DIR"
-    exec setpriv --reuid=watch --regid=watch --init-groups \
-        --inh-caps=-all --bounding-set=-all -- "$@"
+    # Bounding-set / inh-caps need CAP_SETPCAP, which we drop in Compose.
+    exec setpriv --reuid=watch --regid=watch --init-groups -- "$@"
 fi
 
 exec "$@"
