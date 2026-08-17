@@ -196,7 +196,7 @@ docker compose ps    # Status should be healthy after ~25s
 **On your laptop:**
 
 ```bash
-ssh -p 2222 -o StrictHostKeyChecking=no root@YOUR_DROPLET_IP
+ssh -p 2222 -o StrictHostKeyChecking=no YOUR_DROPLET_IP
 ```
 
 Any username works (`root`, `watch`, `anonymous`). There is no password prompt. You should get a full-terminal block stream. `q` or `Ctrl+C` disconnects.
@@ -213,11 +213,9 @@ That session is real SSH on port 22. The port-2222 session is not.
 
 A hostname is nicer than a raw IP. This is **DNS only**.
 
-1. In your DNS host, add an **A** record: `watch.example.com` → Droplet IPv4.
+1. Add an **A** record: `watch.example.com` → Droplet IPv4.
 2. Add **AAAA** only if you enabled IPv6 on the Droplet.
 3. If the zone is on Cloudflare, set the record to **DNS only** (grey cloud). Orange-cloud, tunnels, and Access cannot proxy anonymous SSH.
-
-Wait for the record to resolve, then:
 
 ```bash
 ssh -p 2222 -o StrictHostKeyChecking=no watch.example.com

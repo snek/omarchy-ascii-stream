@@ -107,6 +107,29 @@ class Movie:
         if not self.frames:
             raise RuntimeError(f"no frames decoded from {path}")
 
+    @classmethod
+    def from_arrays(
+        cls,
+        frames: list[np.ndarray],
+        *,
+        fps: float = 24.0,
+        src_width: int | None = None,
+        src_height: int | None = None,
+    ) -> Movie:
+        """Build a Movie from in-memory RGB frames (tests / fixtures)."""
+        if not frames:
+            raise RuntimeError("no frames")
+        self = cls.__new__(cls)
+        first = frames[0]
+        self.fps = fps
+        self.ref_rows = int(first.shape[0])
+        self.ref_cols = int(first.shape[1])
+        self.width = src_width or self.ref_cols
+        self.height = src_height or self.ref_rows
+        self.frames = [np.ascontiguousarray(f, dtype=np.uint8) for f in frames]
+        self._ansi = {}
+        return self
+
     def frame_ansi(self, frame_idx: int, cols: int, rows: int) -> str:
         """Return cached ANSI for one frame, rendering it on first use."""
         key = (cols, rows)
@@ -293,6 +316,14 @@ class AnonServer(asyncssh.SSHServer):
         return StreamSession(self._movie)
 
 
+async def serve(
+    movie: Movie, host: str, port: int, hostkey: pathlib.Path,
+) -> asyncssh.SSHAcceptor:
+    return await asyncssh.create_server(
+        lambda: AnonServer(movie), host, port,
+        server_host_keys=[str(hostkey)], encoding="utf-8")
+
+
 async def main() -> None:
     if not pathlib.Path(VIDEO).exists():
         raise RuntimeError(f"video not found: {VIDEO}")
@@ -304,9 +335,7 @@ async def main() -> None:
         raise RuntimeError(
             f"missing host key: {HOSTKEY} "
             f"(run: ssh-keygen -t ed25519 -f {HOSTKEY} -N '')")
-    server = await asyncssh.create_server(
-        lambda: AnonServer(movie), HOST, PORT,
-        server_host_keys=[str(HOSTKEY)], encoding="utf-8")
+    server = await serve(movie, HOST, PORT, HOSTKEY)
     print(f"[ascii_ssh] listening on {HOST}:{PORT} — connect with any ssh client",
           flush=True)
     try:

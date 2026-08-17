@@ -25,8 +25,8 @@ Inspired by [ascii.theater](https://ascii.theater).
 You need Docker Compose and a video file you have the right to stream.
 
 ```bash
-git clone https://github.com/<you>/quattro.git
-cd quattro
+git clone https://github.com/snek/omarchy-ascii-stream.git
+cd omarchy-ascii-stream
 cp .env.example .env
 cp /path/to/your-clip.mp4 clips/video.mp4
 docker compose up -d --build
@@ -43,10 +43,8 @@ sudo ufw reload
 Then, from anywhere:
 
 ```bash
-ssh -p 2222 -o StrictHostKeyChecking=no YOUR_VPS_IP
+ssh -p 2222 -o StrictHostKeyChecking=no your.vps.example
 ```
-
-Point a DNS A/AAAA record at the VPS if you want a hostname instead of an IP.
 
 ### Admin SSH vs viewer SSH
 
@@ -82,6 +80,17 @@ The whole clip is decoded at startup.
 echo 'VIDEO_PATH=/clips/trailer.webm' >> .env
 docker compose up -d
 ```
+
+## Tests
+
+```bash
+uv sync --group dev
+uv run pytest
+# unit only:
+uv run pytest -m "not e2e"
+```
+
+E2E tests start a real AsyncSSH server against a generated clip (needs `ffmpeg`).
 
 ## Local test
 

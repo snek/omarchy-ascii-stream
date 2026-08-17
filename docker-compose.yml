@@ -3,7 +3,6 @@ services:
     build: .
     image: quattro:0.1.0
     restart: unless-stopped
-    init: true
     stop_grace_period: 5s
     environment:
       VIDEO_PATH: ${VIDEO_PATH:-/clips/video.mp4}

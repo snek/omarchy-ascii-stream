@@ -10,5 +10,30 @@ dependencies = [
     "numpy>=2.0",
 ]
 
+[dependency-groups]
+dev = [
+    "hypothesis>=6.138",
+    "pytest>=9.0",
+    "pytest-asyncio>=1.0",
+    "pytest-cov>=6.0",
+]
+
 [tool.uv]
 package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "e2e: end-to-end SSH stream (needs ffmpeg)",
+]
+
+[tool.coverage.run]
+source = ["ascii_ssh"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 70
+show_missing = true
