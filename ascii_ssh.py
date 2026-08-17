@@ -14,6 +14,9 @@ Impl notes:
   AnonServer.begin_auth() -> False   disables authentication entirely
   pty_requested() reads term size    session_started() starts the pump
   data_received() handles q / ^C / ^D
+
+Frames are decoded once at boot. ANSI is rendered lazily (frame 0 first),
+cached on the Movie for every viewer, and run-length encoded per row.
 """
 from __future__ import annotations
 
@@ -32,10 +35,11 @@ PORT = int(os.environ.get("PORT", "2222"))
 MVFPS = float(os.environ.get("FPS", "0"))  # 0 = source fps
 REF_COLS = int(os.environ.get("GRID_COLS", "160"))
 HOSTKEY = pathlib.Path(os.environ.get("HOST_KEY", "./host_key"))
-BG = os.environ.get("BG", "0;0;0")
+
+FULL = "\u2588"
+HALF = "\u2580"
 
 
-# ── video decode (once) ─────────────────────────────────────────────────────
 def probe(path: str) -> tuple[int, int, float, int]:
     out = subprocess.check_output([
         "ffprobe", "-v", "error", "-select_streams", "v:0",
@@ -47,21 +51,43 @@ def probe(path: str) -> tuple[int, int, float, int]:
     return int(w), int(h), fps, int(nbf or 0)
 
 
+def _pack_rgb(rgb: np.ndarray) -> np.ndarray:
+    """Pack an (H, W, 3) uint8 array into (H, W) uint32 0x00RRGGBB."""
+    r = rgb[:, :, 0].astype(np.uint32)
+    g = rgb[:, :, 1].astype(np.uint32)
+    b = rgb[:, :, 2].astype(np.uint32)
+    return (r << 16) | (g << 8) | b
+
+
+def _sgr_full(rgb: int) -> str:
+    return f"\x1b[49m\x1b[38;2;{(rgb >> 16) & 255};{(rgb >> 8) & 255};{rgb & 255}m"
+
+
+def _sgr_half(top: int, bot: int) -> str:
+    return (
+        f"\x1b[38;2;{(top >> 16) & 255};{(top >> 8) & 255};{top & 255}m"
+        f"\x1b[48;2;{(bot >> 16) & 255};{(bot >> 8) & 255};{bot & 255}m"
+    )
+
+
 class Movie:
     """Decodes source once; holds raw frames at REF_COLS width."""
 
     def __init__(self, path: str, ref_cols: int, fps: float):
-        sw, sh, src_fps, nbf = probe(path)
+        sw, sh, src_fps, _nbf = probe(path)
         self.fps = fps or src_fps
         self.ref_cols = ref_cols
-        self.ref_rows = max(1, round((sh / sw) * ref_cols / 2) * 2)  # even -> halves clean
+        self.ref_rows = max(1, round((sh / sw) * ref_cols / 2) * 2)
         self.width, self.height = sw, sh
         self.frames: list[np.ndarray] = []
+        # (cols, rows) -> list[str | None] aligned with self.frames
+        self._ansi: dict[tuple[int, int], list[str | None]] = {}
         proc = subprocess.Popen([
             "ffmpeg", "-v", "error", "-i", path,
             "-vf", f"scale={self.ref_cols}:{self.ref_rows}:flags=area",
             "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        assert proc.stdout is not None
         size = self.ref_cols * self.ref_rows * 3
         try:
             while True:
@@ -76,41 +102,68 @@ class Movie:
             try:
                 proc.wait(timeout=3)
             except subprocess.TimeoutExpired:
-                proc.kill(); proc.wait()
+                proc.kill()
+                proc.wait()
+        if not self.frames:
+            raise RuntimeError(f"no frames decoded from {path}")
+
+    def frame_ansi(self, frame_idx: int, cols: int, rows: int) -> str:
+        """Return cached ANSI for one frame, rendering it on first use."""
+        key = (cols, rows)
+        bucket = self._ansi.get(key)
+        if bucket is None:
+            bucket = [None] * len(self.frames)
+            self._ansi[key] = bucket
+        i = frame_idx % len(self.frames)
+        cell = bucket[i]
+        if cell is None:
+            cell = self.render_block(i, cols, rows)
+            bucket[i] = cell
+        return cell
 
     def render_block(self, frame_idx: int, cols: int, rows: int) -> str:
-        """Downscale ref frame to `cols`x(rows*2), emit ANSI solid-block lines."""
+        """Downscale ref frame to cols x (rows*2), emit RLE'd ANSI block lines."""
         src = self.frames[frame_idx % len(self.frames)]
-        # nearest local downsample (area flags on the fly is fine for a still)
         dec_h = max(2, rows * 2)
         step_y = max(1, round(src.shape[0] / dec_h))
         step_x = max(1, round(src.shape[1] / cols))
         small = src[::step_y, ::step_x][:dec_h, :cols]
-        # pad if rounding gave us less than requested
         if small.shape[0] < dec_h or small.shape[1] < cols:
             small = self._fit(small, dec_h, cols)
 
-        T = small[0::2]
-        B = small[1::2]
-        if len(T) > len(B):
-            B = np.concatenate([B, T[-1:][None, ...]], axis=0)
-        bg_r, bg_g, bg_b = map(int, BG.split(";"))
-        out = []
-        for r in range(len(T)):
-            tr, br = T[r], B[r]
-            same = np.all(tr == br, axis=1)
-            cell = []
-            for c in range(cols):
-                if same[c]:
-                    t = tr[c]
-                    cell.append(f"\x1b[38;2;{t[0]};{t[1]};{t[2]}m\u2588")
+        top = small[0::2]
+        bot = small[1::2]
+        if len(top) > len(bot):
+            bot = np.concatenate([bot, top[-1:]], axis=0)
+
+        top_p = _pack_rgb(top)
+        bot_p = _pack_rgb(bot)
+        same = top_p == bot_p
+        # bit 48 = half-block, low 24 = top RGB, next 24 = bottom RGB
+        keys = top_p.astype(np.uint64)
+        keys |= np.where(same, np.uint64(0), bot_p.astype(np.uint64)) << 24
+        keys |= (~same).astype(np.uint64) << 48
+
+        lines: list[str] = []
+        for r in range(keys.shape[0]):
+            row = keys[r]
+            n = row.size
+            starts = [0]
+            if n > 1:
+                starts.extend((np.flatnonzero(row[1:] != row[:-1]) + 1).tolist())
+            starts.append(n)
+            parts: list[str] = []
+            for a, b in zip(starts, starts[1:]):
+                k = int(row[a])
+                run = b - a
+                top_rgb = k & 0xFFFFFF
+                if k & (1 << 48):
+                    parts.append(_sgr_half(top_rgb, (k >> 24) & 0xFFFFFF) + HALF * run)
                 else:
-                    t, b = tr[c], br[c]
-                    cell.append(
-                        f"\x1b[38;2;{t[0]};{t[1]};{t[2]}m"
-                        f"\x1b[48;2;{b[0]};{b[1]};{b[2]}m\u2580")
-            out.append("".join(cell) + "\x1b[0m")
-        return "\n".join(out)
+                    parts.append(_sgr_full(top_rgb) + FULL * run)
+            parts.append("\x1b[0m")
+            lines.append("".join(parts))
+        return "\n".join(lines)
 
     @staticmethod
     def _fit(a: np.ndarray, dec_h: int, cols: int) -> np.ndarray:
@@ -122,86 +175,97 @@ class Movie:
         return a[:dec_h, :cols]
 
 
-# ─── ANSI helpers ──────────────────────────────────────────────────────────
 HIDE_CURSOR = "\x1b[?25l"
 SHOW_CURSOR = "\x1b[?25h"
 ALT_SCREEN = "\x1b[?1049h"
 ALT_SCREEN_END = "\x1b[?1049l"
-HOME = "\x1b[H"; CLEAR = "\x1b[2J"
+HOME = "\x1b[H"
+CLEAR = "\x1b[2J"
 RESET = "\x1b[0m"
 
 
-# ─── session ────────────────────────────────────────────────────────────────
 class StreamSession(asyncssh.SSHServerSession):
     def __init__(self, movie: Movie):
         self._movie = movie
         self._chan = None
-        self._tw = 80; self._th = 24
-        self._cache: dict[tuple[int, int], list[str]] = {}
+        self._tw = 80
+        self._th = 24
         self._quit = False
+        self._prefetch_task: asyncio.Task[None] | None = None
 
-    def connection_made(self, chan):
+    def connection_made(self, chan: asyncssh.SSHServerChannel) -> None:
         self._chan = chan
 
-    def pty_requested(self, term_type, term_size, term_modes):
+    def pty_requested(self, term_type, term_size, term_modes) -> bool:
         if term_size:
-            w = getattr(term_size, "width", None) or (term_size[0] if isinstance(term_size, tuple) else None)
-            h = getattr(term_size, "height", None) or (term_size[1] if isinstance(term_size, tuple) else None)
+            w = getattr(term_size, "width", None) or (
+                term_size[0] if isinstance(term_size, tuple) else None)
+            h = getattr(term_size, "height", None) or (
+                term_size[1] if isinstance(term_size, tuple) else None)
             if w and h:
                 self._tw, self._th = int(w), int(h)
         return True
 
-    def shell_requested(self):
+    def shell_requested(self) -> bool:
         return True
 
-    def session_started(self):
+    def session_started(self) -> None:
         asyncio.create_task(self._pump())
 
-    def data_received(self, data: str, datatype: int):
+    def data_received(self, data: str, datatype: int) -> None:
         if not data:
             return
         first = data[0]
-        if data.startswith("q") or ord(first) in (3, 4):  # q / ^C / ^D
+        if data.startswith("q") or ord(first) in (3, 4):
             self._quit = True
             if self._chan and not self._chan.is_closing():
                 self._chan.close()
 
-    def _frames(self, cols: int, rows: int):
-        """Return (or build) the cached block strings for a given terminal grid."""
-        key = (cols, rows)
-        if key not in self._cache:
-            self._cache[key] = [
-                self._movie.render_block(i, cols, rows)
-                for i in range(len(self._movie.frames))
-            ]
-        return self._cache[key]
+    def _grid(self) -> tuple[int, int]:
+        m = self._movie
+        cols = min(max(10, self._tw), m.ref_cols)
+        aspect_rows = max(4, round((m.ref_rows / m.ref_cols * 2) * cols))
+        rows = min(aspect_rows, max(4, self._th - 1))
+        return cols, rows
 
-    async def _pump(self):
+    async def _prefetch(self, cols: int, rows: int) -> None:
+        """Fill the shared ANSI cache without blocking the first frames."""
+        n = len(self._movie.frames)
+        for i in range(n):
+            if self._quit:
+                return
+            self._movie.frame_ansi(i, cols, rows)
+            if i % 4 == 3:
+                await asyncio.sleep(0)
+
+    async def _pump(self) -> None:
         m = self._movie
         try:
-            # cols use the full width; rows = keep aspect inside terminal height
-            cols = min(max(10, self._tw), m.ref_cols)
-            aspect_rows = max(4, round((m.ref_rows / m.ref_cols * 2) * cols))
-            rows = min(aspect_rows, max(4, self._th - 1))
-
-            frames = self._frames(cols, rows)
-            t0 = time.time()
+            cols, rows = self._grid()
+            n = len(m.frames)
             setup = (
-                ALT_SCREEN + CLEAR + HIDE_CURSOR + RESET +
-                f"\r\n\x1b[38;2;255;255;255m"
-                f"quattro  ·  {m.width}x{m.height}  ·  {len(m.frames)} frames @ {m.fps:.0f}fps"
-                f"  ·  'q' quits\x1b[0m\r\n\r\n"
+                ALT_SCREEN + CLEAR + HIDE_CURSOR + RESET
+                + "\r\n\x1b[38;2;255;255;255m"
+                + f"quattro  ·  {m.width}x{m.height}  ·  {n} frames @ {m.fps:.0f}fps"
+                + "  ·  'q' quits\x1b[0m\r\n\r\n"
             )
             self._chan.write(setup)
-            n = 0
+
+            # Frame 0 goes out immediately; the rest warm the shared cache.
+            first = m.frame_ansi(0, cols, rows)
+            self._chan.write(HOME + first)
+            self._prefetch_task = asyncio.create_task(self._prefetch(cols, rows))
+
+            t0 = time.perf_counter()
+            last = 0
             while not self._quit:
-                idx = int(((time.time() - t0) * m.fps)) % len(frames)
-                self._chan.write(HOME)
-                self._chan.write(frames[idx])
-                n += 1
-                await asyncio.sleep(0.05)
-                if self._quit:
-                    break
+                idx = int((time.perf_counter() - t0) * m.fps) % n
+                if idx != last:
+                    self._chan.write(HOME + m.frame_ansi(idx, cols, rows))
+                    last = idx
+                next_t = t0 + (int((time.perf_counter() - t0) * m.fps) + 1) / m.fps
+                delay = next_t - time.perf_counter()
+                await asyncio.sleep(delay if delay > 0 else 0)
         except asyncio.CancelledError:
             pass
         except Exception as e:
@@ -211,10 +275,11 @@ class StreamSession(asyncssh.SSHServerSession):
             except Exception:
                 pass
         finally:
-            for ch in [self._chan]:
-                if ch and not ch.is_closing():
-                    ch.write(f"{RESET}{SHOW_CURSOR}{ALT_SCREEN_END}")
-                    ch.close()
+            if self._prefetch_task and not self._prefetch_task.done():
+                self._prefetch_task.cancel()
+            if self._chan and not self._chan.is_closing():
+                self._chan.write(f"{RESET}{SHOW_CURSOR}{ALT_SCREEN_END}")
+                self._chan.close()
 
 
 class AnonServer(asyncssh.SSHServer):
@@ -222,13 +287,13 @@ class AnonServer(asyncssh.SSHServer):
         self._movie = movie
 
     def begin_auth(self, username: str) -> bool:
-        return False  # no authentication
+        return False
 
     def session_requested(self) -> StreamSession:
         return StreamSession(self._movie)
 
 
-async def main():
+async def main() -> None:
     if not pathlib.Path(VIDEO).exists():
         raise RuntimeError(f"video not found: {VIDEO}")
     print(f"[ascii_ssh] decoding {VIDEO} ...", flush=True)
@@ -236,11 +301,14 @@ async def main():
     print(f"[ascii_ssh] {len(movie.frames)} frames @ {movie.fps:.2f}fps "
           f"ref {movie.ref_cols}x{movie.ref_rows}", flush=True)
     if not HOSTKEY.exists():
-        raise RuntimeError(f"missing host key: {HOSTKEY} (run: ssh-keygen -t ed25519 -f {HOSTKEY} -N '')")
+        raise RuntimeError(
+            f"missing host key: {HOSTKEY} "
+            f"(run: ssh-keygen -t ed25519 -f {HOSTKEY} -N '')")
     server = await asyncssh.create_server(
         lambda: AnonServer(movie), HOST, PORT,
         server_host_keys=[str(HOSTKEY)], encoding="utf-8")
-    print(f"[ascii_ssh] listening on {HOST}:{PORT} — connect with any ssh client", flush=True)
+    print(f"[ascii_ssh] listening on {HOST}:{PORT} — connect with any ssh client",
+          flush=True)
     try:
         await asyncio.Event().wait()
     finally:
