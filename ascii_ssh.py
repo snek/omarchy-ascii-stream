@@ -186,7 +186,9 @@ class Movie:
                     parts.append(_sgr_full(top_rgb) + FULL * run)
             parts.append("\x1b[0m")
             lines.append("".join(parts))
-        return "\n".join(lines)
+        # CNL (next line, col 1) — not \n. A full-width row + \n double-spaces
+        # when the terminal auto-wraps after the last cell.
+        return "\x1b[E".join(lines)
 
     @staticmethod
     def _fit(a: np.ndarray, dec_h: int, cols: int) -> np.ndarray:
@@ -202,6 +204,8 @@ HIDE_CURSOR = "\x1b[?25l"
 SHOW_CURSOR = "\x1b[?25h"
 ALT_SCREEN = "\x1b[?1049h"
 ALT_SCREEN_END = "\x1b[?1049l"
+WRAP_OFF = "\x1b[?7l"
+WRAP_ON = "\x1b[?7h"
 HOME = "\x1b[H"
 CLEAR = "\x1b[2J"
 RESET = "\x1b[0m"
@@ -272,7 +276,9 @@ class StreamSession(asyncssh.SSHServerSession):
 
     def _grid(self) -> tuple[int, int]:
         m = self._movie
-        cols = min(max(10, self._tw), m.ref_cols)
+        # Leave the last column free so auto-wrap cannot insert a blank line
+        # even if the client ignores DECAWM off.
+        cols = min(max(10, self._tw - 1), m.ref_cols)
         aspect_rows = max(4, round((m.ref_rows / m.ref_cols * 2) * cols))
         rows = min(aspect_rows, max(4, self._th - 1))
         return cols, rows
@@ -293,7 +299,7 @@ class StreamSession(asyncssh.SSHServerSession):
             cols, rows = self._grid()
             n = len(m.frames)
             setup = (
-                ALT_SCREEN + CLEAR + HIDE_CURSOR + RESET
+                ALT_SCREEN + CLEAR + HIDE_CURSOR + WRAP_OFF + RESET
                 + "\r\n\x1b[38;2;255;255;255m"
                 + f"quattro  ·  {m.width}x{m.height}  ·  {n} frames @ {m.fps:.0f}fps"
                 + "  ·  'q' quits\x1b[0m\r\n\r\n"
@@ -327,7 +333,7 @@ class StreamSession(asyncssh.SSHServerSession):
             if self._prefetch_task and not self._prefetch_task.done():
                 self._prefetch_task.cancel()
             if self._chan and not self._chan.is_closing():
-                self._chan.write(f"{RESET}{SHOW_CURSOR}{ALT_SCREEN_END}")
+                self._chan.write(f"{RESET}{WRAP_ON}{SHOW_CURSOR}{ALT_SCREEN_END}")
                 self._chan.close()
 
 

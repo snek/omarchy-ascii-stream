@@ -43,7 +43,7 @@ def test_solid_frame_is_full_blocks(red_movie: Movie) -> None:
     assert FULL in out
     assert HALF not in out
     assert "255;0;0" in out
-    assert out.count("\n") == 3
+    assert out.count("\x1b[E") == 3
 
 
 def test_stacked_colors_use_half_blocks() -> None:
@@ -60,7 +60,7 @@ def test_rle_collapses_a_solid_row() -> None:
     movie = Movie.from_arrays([solid_frame(4, 20, (10, 20, 30))])
     out = movie.render_block(0, cols=20, rows=2)
     # one SGR + 20 full blocks per row, not 20 separate SGR sequences
-    row0 = out.split("\n")[0]
+    row0 = out.split("\x1b[E")[0]
     assert row0.count(FULL) == 20
     assert row0.count("38;2;10;20;30") == 1
 
