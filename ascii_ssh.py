@@ -235,14 +235,40 @@ class StreamSession(asyncssh.SSHServerSession):
     def session_started(self) -> None:
         asyncio.create_task(self._pump())
 
+    def _request_quit(self) -> None:
+        self._quit = True
+        if self._chan and not self._chan.is_closing():
+            self._chan.close()
+
     def data_received(self, data: str, datatype: int) -> None:
         if not data:
             return
-        first = data[0]
-        if data.startswith("q") or ord(first) in (3, 4):
-            self._quit = True
-            if self._chan and not self._chan.is_closing():
-                self._chan.close()
+        # Raw ETX/EOT, 'q', or Kitty/Ghostty CSI-u encodings of Ctrl+C / q.
+        if (
+            "\x03" in data
+            or "\x04" in data
+            or data.startswith("q")
+            or "\x1b[99;5u" in data
+            or "\x1b[67;5u" in data
+            or "\x1b[3;5u" in data
+        ):
+            self._request_quit()
+
+    def break_received(self, msec: int) -> bool:
+        # AsyncSSH's default line editor maps Ctrl+C to a break.
+        self._request_quit()
+        return True
+
+    def signal_received(self, signal: str) -> None:
+        if signal.upper() in {"INT", "TERM", "QUIT", "HUP", "SIGINT", "SIGTERM"}:
+            self._request_quit()
+
+    def eof_received(self) -> bool:
+        self._request_quit()
+        return False
+
+    def soft_eof_received(self) -> None:
+        self._request_quit()
 
     def _grid(self) -> tuple[int, int]:
         m = self._movie
@@ -321,7 +347,8 @@ async def serve(
 ) -> asyncssh.SSHAcceptor:
     return await asyncssh.create_server(
         lambda: AnonServer(movie), host, port,
-        server_host_keys=[str(hostkey)], encoding="utf-8")
+        server_host_keys=[str(hostkey)], encoding="utf-8",
+        line_editor=False)
 
 
 async def main() -> None:

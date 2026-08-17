@@ -58,13 +58,31 @@ def test_pty_from_object(session: StreamSession) -> None:
     assert (session._tw, session._th) == (50, 18)
 
 
-@pytest.mark.parametrize("payload", ["q", "quit", "\x03", "\x04"])
+@pytest.mark.parametrize("payload", ["q", "quit", "\x03", "\x04", "\x1b[99;5u"])
 def test_quit_keys_close_channel(session: StreamSession, payload: str) -> None:
     chan = session._chan
     assert isinstance(chan, FakeChan)
     session.data_received(payload, 0)
     assert session._quit is True
     assert chan.closed is True
+
+
+def test_break_and_signal_quit(session: StreamSession) -> None:
+    chan = session._chan
+    assert isinstance(chan, FakeChan)
+    assert session.break_received(0) is True
+    assert session._quit is True
+    assert chan.closed is True
+
+
+def test_signal_int_quits(session: StreamSession) -> None:
+    session.signal_received("INT")
+    assert session._quit is True
+
+
+def test_eof_quits(session: StreamSession) -> None:
+    assert session.eof_received() is False
+    assert session._quit is True
 
 
 def test_empty_and_other_input_ignored(session: StreamSession) -> None:
