@@ -39,8 +39,14 @@ pub fn read(file: &[u8]) -> Option<(Meta, std::ops::Range<usize>)> {
     let fps = f64::from_le_bytes(f[24..32].try_into().ok()?);
     let frame_count = u32::from_le_bytes(f[32..36].try_into().ok()?);
     let payload_len = u64::from_le_bytes(f[36..44].try_into().ok()?) as usize;
-    if fps <= 0.0 || ref_cols == 0 || ref_rows == 0 || frame_count == 0 { return None; }
-    let expect = frame_count as usize * ref_cols as usize * ref_rows as usize * 3;
+    if !fps.is_finite() || fps <= 0.0 || ref_cols == 0 || ref_rows == 0 || frame_count == 0 {
+        return None;
+    }
+    let expect = u64::from(frame_count)
+        .checked_mul(u64::from(ref_cols))?
+        .checked_mul(u64::from(ref_rows))?
+        .checked_mul(3)?;
+    let expect = usize::try_from(expect).ok()?;
     if payload_len != expect || start < payload_len { return None; }
     let payload = start - payload_len..start;
     Some((Meta { src_width, src_height, ref_cols, ref_rows, fps, frame_count }, payload))
@@ -70,6 +76,27 @@ mod tests {
         });
         let len_at = file.len() - 8 - 8;
         file[len_at..len_at + 8].copy_from_slice(&1u64.to_le_bytes());
+        assert!(read(&file).is_none());
+    }
+
+    #[test]
+    fn reject_a_nan_fps() {
+        let file = append(b"stub", &[0u8; 12], &Meta {
+            src_width: 1, src_height: 1, ref_cols: 2, ref_rows: 2, fps: f64::NAN, frame_count: 1,
+        });
+        assert!(read(&file).is_none());
+    }
+
+    #[test]
+    fn reject_an_overflowing_dimension_product() {
+        let file = append(b"stub", &[], &Meta {
+            src_width: 1,
+            src_height: 1,
+            ref_cols: u32::MAX,
+            ref_rows: u32::MAX,
+            fps: 1.0,
+            frame_count: u32::MAX,
+        });
         assert!(read(&file).is_none());
     }
 }

@@ -249,7 +249,11 @@ fn finish_child(stdout: Option<ChildStdout>, child: &mut Child) {
                 return;
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(20)),
-            Err(_) => return,
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return;
+            }
         }
     }
 }
