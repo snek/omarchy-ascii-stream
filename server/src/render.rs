@@ -6,16 +6,7 @@ pub struct Frame {
 }
 
 pub fn round_half_even(value: f64) -> i64 {
-    let floor = value.floor();
-    let frac = value - floor;
-    if (frac - 0.5).abs() <= 1e-9 {
-        let down = floor as i64;
-        if down % 2 == 0 { down } else { down + 1 }
-    } else if frac > 0.5 {
-        floor as i64 + 1
-    } else {
-        floor as i64
-    }
+    value.round_ties_even() as i64
 }
 
 pub fn grid(term_cols: u32, term_rows: u32, ref_cols: u32, ref_rows: u32) -> (u32, u32) {
@@ -159,6 +150,23 @@ mod tests {
         assert_eq!(round_half_even(2.5), 2);
         assert_eq!(round_half_even(4.5), 4);
         assert_eq!(round_half_even(2.6), 3);
+    }
+
+    #[test]
+    fn edge_pad_fills_the_grid_and_repeats_the_last_pixel() {
+        // 2x2 is shorter than dec_h (4) and narrower than cols (3).
+        // Padding repeats the sampled edge, pixel (1, 1) = 7,8,9.
+        let frame = Frame {
+            width: 2,
+            height: 2,
+            rgb: vec![255, 0, 0, 0, 255, 0, 0, 0, 255, 7, 8, 9],
+        };
+        let cols = 3;
+        let rows = 2;
+        let out = render_frame(&frame, cols, rows);
+        assert_eq!(cell_count(&out), cols * rows);
+        let expect = "\u{1b}[38;2;255;0;0m\u{1b}[48;2;0;0;255m▀\u{1b}[38;2;0;255;0m\u{1b}[48;2;7;8;9m▀▀\u{1b}[0m\u{1b}[E\u{1b}[49m\u{1b}[38;2;0;0;255m█\u{1b}[49m\u{1b}[38;2;7;8;9m██\u{1b}[0m";
+        assert_eq!(out, expect.as_bytes());
     }
 
     #[test]

@@ -30,6 +30,10 @@ impl Slot {
         Self { gate: Mutex::new(()), value: OnceCell::new() }
     }
 
+    fn stored(&self) -> Option<Bytes> {
+        self.value.get().cloned()
+    }
+
     async fn get(&self, render: impl FnOnce() -> Vec<u8> + Send + 'static) -> Result<(Bytes, bool), String> {
         if let Some(v) = self.value.get() {
             return Ok((v.clone(), false));
@@ -97,6 +101,9 @@ impl AnsiCache {
             let inner = self.inner.lock().await;
             inner.sizes.get(&(cols, rows)).cloned().ok_or_else(|| "resolve before frame".to_string())?
         };
+        if let Some(bytes) = size.slots[index].stored() {
+            return Ok(bytes);
+        }
         let frame = movie.frames[index].clone();
         let cols_us = cols as usize;
         let rows_us = rows as usize;
@@ -181,6 +188,21 @@ mod tests {
         let a = a.unwrap().unwrap();
         let b = b.unwrap().unwrap();
         assert_eq!(a.as_ptr(), b.as_ptr());
+    }
+
+    #[tokio::test]
+    async fn two_grids_do_not_share_a_buffer_and_index_wraps() {
+        let movie = movie();
+        let cache = AnsiCache::new(8 * 1024 * 1024);
+        let (cols_a, rows_a) = cache.resolve(2, 1, movie.frame_count()).await;
+        let (cols_b, rows_b) = cache.resolve(4, 2, movie.frame_count()).await;
+        assert_ne!((cols_a, rows_a), (cols_b, rows_b));
+        let a = cache.frame(&movie, cols_a, rows_a, 0).await.unwrap();
+        let b = cache.frame(&movie, cols_b, rows_b, 0).await.unwrap();
+        assert!(a.as_ptr() != b.as_ptr() || a.len() != b.len());
+        let wrapped = cache.frame(&movie, cols_a, rows_a, movie.frame_count()).await.unwrap();
+        assert_eq!(a.as_ptr(), wrapped.as_ptr());
+        assert_eq!(a, wrapped);
     }
 
     #[tokio::test]

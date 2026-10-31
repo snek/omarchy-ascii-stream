@@ -33,6 +33,17 @@ impl Movie {
     }
 }
 
+/// `0.0` means "use the source rate". Anything else must be finite and `> 0`.
+/// A probed `0/1` arrives here as `source_fps == 0.0`.
+pub fn resolve_playback_fps(fps_override: f64, source_fps: f64) -> Result<f64, String> {
+    let fps = if fps_override == 0.0 { source_fps } else { fps_override };
+    if fps.is_finite() && fps > 0.0 {
+        Ok(fps)
+    } else {
+        Err("FPS must be finite and greater than 0".to_string())
+    }
+}
+
 use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
@@ -49,7 +60,7 @@ pub fn ref_rows_for(src_width: u32, src_height: u32, grid_cols: u32) -> u32 {
 
 pub async fn decode_file(path: &Path, grid_cols: u32, fps_override: f64) -> Result<Movie, String> {
     let (width, height, src_fps) = probe(path).await?;
-    let fps = if fps_override == 0.0 { src_fps } else { fps_override };
+    let fps = resolve_playback_fps(fps_override, src_fps)?;
     let ref_rows = ref_rows_for(width, height, grid_cols);
     let frames = read_frames(path, grid_cols, ref_rows).await?;
     if frames.is_empty() {
@@ -131,5 +142,24 @@ async fn shutdown_ffmpeg(stdout: Option<ChildStdout>, child: &mut Child) {
     if tokio::time::timeout(Duration::from_secs(3), child.wait()).await.is_err() {
         let _ = child.start_kill();
         let _ = child.wait().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_playback_fps;
+
+    #[test]
+    fn playback_fps_rejects_negative_override_and_probed_zero() {
+        let negative = resolve_playback_fps(-5.0, 24.0).unwrap_err();
+        assert!(negative.contains("FPS"), "{negative}");
+        // ffprobe `0/1` becomes source fps 0.
+        let probed = resolve_playback_fps(0.0, 0.0).unwrap_err();
+        assert!(probed.contains("FPS"), "{probed}");
+        assert!(resolve_playback_fps(0.0, f64::NAN).is_err());
+        assert!(resolve_playback_fps(f64::INFINITY, 24.0).is_err());
+        assert!(resolve_playback_fps(f64::NEG_INFINITY, 24.0).is_err());
+        assert_eq!(resolve_playback_fps(0.0, 23.976).unwrap(), 23.976);
+        assert_eq!(resolve_playback_fps(12.5, 24.0).unwrap(), 12.5);
     }
 }
