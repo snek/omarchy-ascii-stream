@@ -6,16 +6,7 @@ pub struct Frame {
 }
 
 pub fn round_half_even(value: f64) -> i64 {
-    let floor = value.floor();
-    let frac = value - floor;
-    if (frac - 0.5).abs() <= 1e-9 {
-        let down = floor as i64;
-        if down % 2 == 0 { down } else { down + 1 }
-    } else if frac > 0.5 {
-        floor as i64 + 1
-    } else {
-        floor as i64
-    }
+    value.round_ties_even() as i64
 }
 
 pub fn grid(term_cols: u32, term_rows: u32, ref_cols: u32, ref_rows: u32) -> (u32, u32) {
@@ -57,7 +48,7 @@ pub fn render_frame(frame: &Frame, cols: usize, rows: usize) -> Vec<u8> {
             pixels[iy * cols + ix] = [frame.rgb[i], frame.rgb[i + 1], frame.rgb[i + 2]];
         }
     }
-    let mut char_rows = dec_h / 2 + usize::from(dec_h % 2 == 1);
+    let char_rows = dec_h / 2 + usize::from(dec_h % 2 == 1);
     let mut lines = Vec::with_capacity(char_rows);
     for r in 0..char_rows {
         let top_y = (r * 2).min(dec_h - 1);
