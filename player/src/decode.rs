@@ -1,7 +1,7 @@
 use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, ChildStdout, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use crate::footer::Meta;
@@ -192,11 +192,12 @@ fn read_frames(path: &Path, ref_cols: u32, ref_rows: u32) -> Result<Vec<Frame>, 
         .stderr(Stdio::null())
         .spawn()
         .map_err(|e| e.to_string())?;
-    let read = match child.stdout.take() {
-        Some(mut stdout) => collect_frames(&mut stdout, ref_cols, ref_rows),
+    let mut stdout = child.stdout.take();
+    let read = match stdout.as_mut() {
+        Some(stdout) => collect_frames(stdout, ref_cols, ref_rows),
         None => Err("ffmpeg stdout".to_string()),
     };
-    finish_child(child);
+    finish_child(stdout, &mut child);
     let frames = read?;
     if frames.is_empty() {
         return Err(format!("no frames decoded from {}", path.display()));
@@ -233,7 +234,11 @@ fn collect_frames(stdout: &mut impl Read, ref_cols: u32, ref_rows: u32) -> Resul
     Ok(frames)
 }
 
-fn finish_child(mut child: Child) {
+fn finish_child(stdout: Option<ChildStdout>, child: &mut Child) {
+    drop(stdout);
+    let pid = child.id();
+    // SAFETY: pid belongs to this unreaped child, so it cannot have been reused.
+    let _ = unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
         match child.try_wait() {
@@ -244,11 +249,7 @@ fn finish_child(mut child: Child) {
                 return;
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(20)),
-            Err(_) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return;
-            }
+            Err(_) => return,
         }
     }
 }
