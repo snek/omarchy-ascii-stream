@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["server"]
+members = ["server", "player"]
 
 [profile.release]
 lto = true
