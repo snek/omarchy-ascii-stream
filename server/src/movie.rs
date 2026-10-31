@@ -35,9 +35,10 @@ impl Movie {
 
 use std::path::Path;
 use std::process::Stdio;
+use std::time::Duration;
 
 use tokio::io::AsyncReadExt;
-use tokio::process::Command;
+use tokio::process::{Child, ChildStdout, Command};
 
 use crate::render::round_half_even;
 
@@ -91,7 +92,16 @@ async fn read_frames(path: &Path, ref_cols: u32, ref_rows: u32) -> Result<Vec<Fr
         .stderr(Stdio::null())
         .spawn()
         .map_err(|e| e.to_string())?;
-    let mut stdout = child.stdout.take().ok_or("ffmpeg stdout")?;
+    let mut stdout = child.stdout.take();
+    let read = match stdout.as_mut() {
+        Some(stdout) => collect_frames(stdout, ref_cols, ref_rows).await,
+        None => Err("ffmpeg stdout".to_string()),
+    };
+    shutdown_ffmpeg(stdout, &mut child).await;
+    read
+}
+
+async fn collect_frames(stdout: &mut ChildStdout, ref_cols: u32, ref_rows: u32) -> Result<Vec<Frame>, String> {
     let size = ref_cols as usize * ref_rows as usize * 3;
     let mut frames = Vec::new();
     loop {
@@ -109,13 +119,17 @@ async fn read_frames(path: &Path, ref_cols: u32, ref_rows: u32) -> Result<Vec<Fr
         }
         frames.push(Frame { width: ref_cols as usize, height: ref_rows as usize, rgb: buf });
     }
-    drop(stdout);
-    match tokio::time::timeout(std::time::Duration::from_secs(3), child.wait()).await {
-        Ok(Ok(status)) if status.success() || !frames.is_empty() => {}
-        _ => {
-            let _ = child.start_kill();
-            let _ = child.wait().await;
-        }
-    }
     Ok(frames)
+}
+
+async fn shutdown_ffmpeg(stdout: Option<ChildStdout>, child: &mut Child) {
+    drop(stdout);
+    if let Some(pid) = child.id() {
+        // SAFETY: pid belongs to this unreaped child, so it cannot have been reused.
+        let _ = unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+    }
+    if tokio::time::timeout(Duration::from_secs(3), child.wait()).await.is_err() {
+        let _ = child.start_kill();
+        let _ = child.wait().await;
+    }
 }
