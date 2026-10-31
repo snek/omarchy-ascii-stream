@@ -1,4 +1,4 @@
-# quattro
+# bootleg
 
 Stream a video as **truecolor solid-block art** over **anonymous SSH**.
 
@@ -71,6 +71,7 @@ Copy `.env.example` to `.env`. Compose reads it automatically.
 | `VIDEO_PATH` | `/clips/video.mp4` | Clip path **inside** the container (`./clips` is mounted at `/clips`) |
 | `FPS` | `0` | Playback rate. `0` = source fps |
 | `GRID_COLS` | `160` | Decode width in cells. Higher is sharper and uses more RAM |
+| `ANSI_CACHE_MIB` | `512` | Retained rendered-ANSI budget, in MiB |
 
 Changing the video or `GRID_COLS` requires a restart (`docker compose up -d`).
 The whole clip is decoded at startup.
@@ -84,13 +85,8 @@ docker compose up -d
 ## Tests
 
 ```bash
-uv sync --group dev
-uv run pytest
-# unit only:
-uv run pytest -m "not e2e"
+cargo test -p bootleg
 ```
-
-E2E tests start a real AsyncSSH server against a generated clip (needs `ffmpeg`).
 
 ## Local test
 
@@ -121,7 +117,7 @@ Compose sets a 1 GiB memory limit by default.
 ## Layout
 
 ```
-ascii_ssh.py         SSH server
+server/              SSH server
 Dockerfile           image build
 docker-compose.yml   VPS / local deploy
 entrypoint.sh        host-key bootstrap, drop root

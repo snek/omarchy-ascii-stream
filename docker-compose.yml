@@ -1,7 +1,7 @@
 services:
-  quattro:
+  bootleg:
     build: .
-    image: quattro:0.1.0
+    image: bootleg:0.1.0
     restart: unless-stopped
     stop_grace_period: 5s
     environment:
@@ -11,6 +11,7 @@ services:
       FPS: ${FPS:-0}
       GRID_COLS: ${GRID_COLS:-160}
       HOST_KEY: /data/host_key
+      ANSI_CACHE_MIB: ${ANSI_CACHE_MIB:-512}
     volumes:
       - ./clips:/clips:ro
       - ./data:/data:rw

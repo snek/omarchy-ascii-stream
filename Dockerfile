@@ -1,8 +1,11 @@
 # syntax=docker/dockerfile:1
-FROM ghcr.io/astral-sh/uv:0.11.11 AS uv
+FROM rust:1-bookworm AS build
+WORKDIR /src
+COPY Cargo.toml Cargo.lock ./
+COPY server ./server
+RUN cargo build --release -p bootleg
 
-FROM python:3.13-slim
-
+FROM debian:bookworm-slim
 RUN set -ex \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -13,27 +16,15 @@ RUN set -ex \
         util-linux \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --uid 1000 --home /app --shell /usr/sbin/nologin watch
-
-COPY --from=uv /uv /usr/local/bin/uv
-
 WORKDIR /app
-COPY pyproject.toml uv.lock ./
-RUN set -ex \
-    && uv sync --frozen --no-dev --no-install-project
-
-COPY ascii_ssh.py entrypoint.sh ./
-RUN set -ex \
-    && chmod +x ./entrypoint.sh \
+COPY --from=build /src/target/release/bootleg /app/bootleg
+COPY entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh /app/bootleg \
     && chown -R watch:watch /app
-
-ENV PATH="/app/.venv/bin:$PATH" \
-    PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    VIDEO_PATH=/clips/video.mp4 \
+ENV VIDEO_PATH=/clips/video.mp4 \
     HOST=0.0.0.0 \
     PORT=2222 \
     HOST_KEY=/data/host_key
-
 EXPOSE 2222
 ENTRYPOINT ["tini", "-v", "--", "/app/entrypoint.sh"]
-CMD ["python", "ascii_ssh.py"]
+CMD ["/app/bootleg"]

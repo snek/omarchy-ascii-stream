@@ -10,7 +10,7 @@ anyhow = "1"
 bytes = "1"
 libc = "0.2"
 russh = "0.54"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util", "net"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util", "net", "signal"] }
 
 [dev-dependencies]
 proptest = "1"

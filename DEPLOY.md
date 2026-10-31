@@ -1,4 +1,4 @@
-# Deploy quattro on a fresh DigitalOcean VPS
+# Deploy bootleg on a fresh DigitalOcean VPS
 
 End-to-end steps from an empty DigitalOcean account to viewers running:
 
@@ -33,7 +33,7 @@ This service is **anonymous public SSH**. It never opens a shell. DigitalOcean's
 3. **Plan** — Basic, **2 GB RAM** or larger (see table above).
 4. **Region** — closest to the audience.
 5. **Authentication** — SSH key. Do not use a password.
-6. **Hostname** — e.g. `quattro`.
+6. **Hostname** — e.g. `bootleg`.
 7. **IPv6** — optional; enable if you want AAAA later.
 8. Create the Droplet. Copy its public IPv4.
 
@@ -44,7 +44,7 @@ Do **not** enable a managed database, App Platform, or a load balancer. This is 
 DigitalOcean [Cloud Firewalls](https://docs.digitalocean.com/products/networking/firewalls/) sit in front of the Droplet and do not fight with Docker the way UFW does. Prefer this over UFW. Use **one** firewall layer, not both.
 
 1. **Networking → Firewalls → Create Firewall**.
-2. Name it `quattro`.
+2. Name it `bootleg`.
 3. **Inbound rules** (delete the defaults, then add):
 
    | Type | Protocol | Port | Sources |
@@ -53,7 +53,7 @@ DigitalOcean [Cloud Firewalls](https://docs.digitalocean.com/products/networking
    | Custom (viewers) | TCP | 2222 | All IPv4, and All IPv6 if you enabled IPv6 |
 
 4. **Outbound rules** — leave the defaults (allow all). The image must reach Docker Hub / GitHub / Ubuntu mirrors to build.
-5. **Apply to Droplets** — attach `quattro`.
+5. **Apply to Droplets** — attach `bootleg`.
 6. Save.
 
 Until this firewall is attached, a brand-new Droplet is reachable on every port. Attach it as soon as the Droplet exists.
@@ -108,8 +108,8 @@ docker compose version
 
 ```bash
 mkdir -p /opt
-git clone https://github.com/snek/omarchy-ascii-stream.git /opt/quattro
-cd /opt/quattro
+git clone https://github.com/snek/omarchy-ascii-stream.git /opt/bootleg
+cd /opt/bootleg
 ```
 
 ## 6. Copy the video onto the Droplet
@@ -117,14 +117,14 @@ cd /opt/quattro
 On **your laptop** (not the Droplet):
 
 ```bash
-scp /path/to/your-clip.mp4 root@YOUR_DROPLET_IP:/opt/quattro/clips/video.mp4
+scp /path/to/your-clip.mp4 root@YOUR_DROPLET_IP:/opt/bootleg/clips/video.mp4
 ```
 
 Or, if you are already on the Droplet and the file is elsewhere:
 
 ```bash
 # example: you uploaded to /root/clip.mp4
-cp /root/clip.mp4 /opt/quattro/clips/video.mp4
+cp /root/clip.mp4 /opt/bootleg/clips/video.mp4
 ```
 
 The filename `video.mp4` matches the default `VIDEO_PATH`. A different name is fine if you set `VIDEO_PATH` in the next step (path is **inside** the container, so `./clips/trailer.webm` on the host is `/clips/trailer.webm`).
@@ -132,13 +132,13 @@ The filename `video.mp4` matches the default `VIDEO_PATH`. A different name is f
 Confirm it landed:
 
 ```bash
-ls -lh /opt/quattro/clips/
+ls -lh /opt/bootleg/clips/
 ```
 
 ## 7. Configure
 
 ```bash
-cd /opt/quattro
+cd /opt/bootleg
 cp .env.example .env
 ```
 
@@ -159,7 +159,7 @@ Do **not** set `SSH_PUBLIC_PORT=22`. That is your admin SSH.
 ## 8. Start the stack
 
 ```bash
-cd /opt/quattro
+cd /opt/bootleg
 docker compose up -d --build
 docker compose ps
 docker compose logs -f
@@ -174,7 +174,7 @@ On first boot you should see:
 
 `Ctrl+C` leaves the log follow; the container keeps running.
 
-The host key is written to `/opt/quattro/data/` and survives `docker compose down` / rebuilds. Do not commit or copy that directory into git.
+The host key is written to `/opt/bootleg/data/` and survives `docker compose down` / rebuilds. Do not commit or copy that directory into git.
 
 If the container exits immediately:
 
@@ -226,13 +226,13 @@ Do not put this service on port 22 just to drop `-p`. Move admin SSH first, or u
 ## 11. Day-2 operations
 
 ```bash
-cd /opt/quattro
+cd /opt/bootleg
 
 # logs
 docker compose logs -f --tail=100
 
 # replace the clip
-scp new.mp4 root@YOUR_DROPLET_IP:/opt/quattro/clips/video.mp4
+scp new.mp4 root@YOUR_DROPLET_IP:/opt/bootleg/clips/video.mp4
 docker compose up -d --force-recreate
 
 # change GRID_COLS / FPS
@@ -255,7 +255,7 @@ Replacing `data/host_key` makes every returning client warn about a changed host
 |---|---|
 | `Connection refused` | `docker compose ps`, Cloud Firewall inbound **2222**, `ss -lntp \| grep 2222` |
 | `Connection timed out` | Firewall / your own network blocking 2222. DigitalOcean firewall must allow it from `All IPv4`. |
-| Password prompt on 2222 | You hit **sshd on 22**, not quattro. Use `-p 2222`. |
+| Password prompt on 2222 | You hit **sshd on 22**, not bootleg. Use `-p 2222`. |
 | Container restart loop | `docker compose logs` — almost always a missing `VIDEO_PATH`. |
 | `stream error` / killed | Clip + `GRID_COLS` exceeded `mem_limit` (1g). Shorten the video, lower `GRID_COLS`, or raise `mem_limit` in `docker-compose.yml` **and** the Droplet RAM. |
 | Build cannot pull images | Cloud Firewall outbound must allow HTTPS. |
@@ -267,6 +267,6 @@ Replacing `data/host_key` makes every returning client warn about a changed host
 - Port **22** is how **you** get in. Restrict it to your IP in the Cloud Firewall if you can.
 - The process drops to uid 1000, drops capabilities, and runs on a read-only rootfs. Clients cannot get a shell, SFTP, or forwarding.
 - Treat `clips/` as public. Do not put secrets there.
-- Do not publish quattro on port 22 while that is still your admin SSH.
+- Do not publish bootleg on port 22 while that is still your admin SSH.
 
 You are done when a machine that is not the Droplet can run the `ssh -p 2222` command in the header and see the clip.

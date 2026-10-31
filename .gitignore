@@ -9,15 +9,8 @@ host_key.pub
 clips/*
 !clips/.gitkeep
 
-# python
-.venv/
-__pycache__/
-*.py[cod]
-*.egg-info/
-.ruff_cache/
-.pytest_cache/
-.coverage
-htmlcov/
+# rust
+/target
 
 # os
 .DS_Store

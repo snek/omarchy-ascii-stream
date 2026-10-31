@@ -8,16 +8,16 @@ DATA_DIR="$(dirname "$HOST_KEY")"
 mkdir -p "$DATA_DIR"
 
 if [ ! -f "$VIDEO_PATH" ]; then
-    echo "[quattro] no video at ${VIDEO_PATH}" >&2
-    echo "[quattro] drop an .mp4 or .webm into ./clips and set VIDEO_PATH, then restart." >&2
+    echo "[bootleg] no video at ${VIDEO_PATH}" >&2
+    echo "[bootleg] drop an .mp4 or .webm into ./clips and set VIDEO_PATH, then restart." >&2
     exit 1
 fi
 
 if [ ! -f "$HOST_KEY" ]; then
-    echo "[quattro] generating host key at ${HOST_KEY}"
-    ssh-keygen -q -t ed25519 -f "$HOST_KEY" -N "" -C "quattro"
+    echo "[bootleg] generating host key at ${HOST_KEY}"
+    ssh-keygen -q -t ed25519 -f "$HOST_KEY" -N "" -C "bootleg"
 else
-    echo "[quattro] using existing host key at ${HOST_KEY}"
+    echo "[bootleg] using existing host key at ${HOST_KEY}"
 fi
 
 # Drop root if the image started as uid 0 (volume perms are then fixed first).
