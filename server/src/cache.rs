@@ -30,18 +30,18 @@ impl Slot {
         Self { gate: Mutex::new(()), value: OnceCell::new() }
     }
 
-    async fn get(&self, render: impl FnOnce() -> Vec<u8> + Send + 'static) -> (Bytes, bool) {
+    async fn get(&self, render: impl FnOnce() -> Vec<u8> + Send + 'static) -> Result<(Bytes, bool), String> {
         if let Some(v) = self.value.get() {
-            return (v.clone(), false);
+            return Ok((v.clone(), false));
         }
         let _guard = self.gate.lock().await;
         if let Some(v) = self.value.get() {
-            return (v.clone(), false);
+            return Ok((v.clone(), false));
         }
-        let rendered = tokio::task::spawn_blocking(render).await.expect("render");
+        let rendered = tokio::task::spawn_blocking(render).await.map_err(|err| err.to_string())?;
         let bytes = Bytes::from(rendered);
         let _ = self.value.set(bytes.clone());
-        (bytes, true)
+        Ok((bytes, true))
     }
 }
 
@@ -91,21 +91,21 @@ impl AnsiCache {
         (cols, rows)
     }
 
-    pub async fn frame(&self, movie: &Movie, cols: u32, rows: u32, index: usize) -> Bytes {
+    pub async fn frame(&self, movie: &Movie, cols: u32, rows: u32, index: usize) -> Result<Bytes, String> {
         let index = index % movie.frame_count();
         let size = {
             let inner = self.inner.lock().await;
-            inner.sizes.get(&(cols, rows)).cloned().expect("resolve before frame")
+            inner.sizes.get(&(cols, rows)).cloned().ok_or_else(|| "resolve before frame".to_string())?
         };
         let frame = movie.frames[index].clone();
         let cols_us = cols as usize;
         let rows_us = rows as usize;
-        let (bytes, stored) = size.slots[index].get(move || render_frame(&frame, cols_us, rows_us)).await;
+        let (bytes, stored) = size.slots[index].get(move || render_frame(&frame, cols_us, rows_us)).await?;
         if stored {
             let mut inner = self.inner.lock().await;
             inner.retained += bytes.len();
         }
-        bytes
+        Ok(bytes)
     }
 
     pub async fn spawn_fill(self: &Arc<Self>, movie: Arc<Movie>, cols: u32, rows: u32) {
@@ -121,7 +121,9 @@ impl AnsiCache {
         let cache = Arc::clone(self);
         *fill = Some(tokio::spawn(async move {
             for index in 0..movie.frame_count() {
-                let _ = cache.frame(&movie, cols, rows, index).await;
+                if cache.frame(&movie, cols, rows, index).await.is_err() {
+                    break;
+                }
             }
         }));
     }
@@ -157,8 +159,8 @@ mod tests {
         let movie = movie();
         let cache = AnsiCache::new(10_000);
         let (cols, rows) = cache.resolve(2, 1, movie.frame_count()).await;
-        let a = cache.frame(&movie, cols, rows, 0).await;
-        let b = cache.frame(&movie, cols, rows, 0).await;
+        let a = cache.frame(&movie, cols, rows, 0).await.unwrap();
+        let b = cache.frame(&movie, cols, rows, 0).await.unwrap();
         assert_eq!(a, b);
         assert_eq!(a.as_ptr(), b.as_ptr());
     }
@@ -176,8 +178,8 @@ mod tests {
             tokio::spawn(async move { c1.frame(&m1, cols, rows, 0).await }),
             tokio::spawn(async move { c2.frame(&m2, cols, rows, 0).await }),
         );
-        let a = a.unwrap();
-        let b = b.unwrap();
+        let a = a.unwrap().unwrap();
+        let b = b.unwrap().unwrap();
         assert_eq!(a.as_ptr(), b.as_ptr());
     }
 
@@ -187,7 +189,7 @@ mod tests {
         let cache = AnsiCache::new(1);
         let first = cache.resolve(8, 4, movie.frame_count()).await;
         assert_eq!(first, (8, 4));
-        let _ = cache.frame(&movie, first.0, first.1, 0).await;
+        cache.frame(&movie, first.0, first.1, 0).await.unwrap();
         let second = cache.resolve(20, 6, movie.frame_count()).await;
         assert_eq!(second, first);
     }
