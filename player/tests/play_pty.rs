@@ -24,7 +24,7 @@ fn exported_file_plays_blocks_and_exits() {
         .status().unwrap().success());
     let pty = native_pty_system();
     let pair = pty.openpty(PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 }).unwrap();
-    let mut cmd = CommandBuilder::new(out);
+    let cmd = CommandBuilder::new(out);
     let mut child = pair.slave.spawn_command(cmd).unwrap();
     drop(pair.slave);
     let mut reader = pair.master.try_clone_reader().unwrap();
