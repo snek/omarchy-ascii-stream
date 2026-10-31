@@ -20,6 +20,10 @@ use crate::render::grid;
 const STOP_LIVE: u8 = 0;
 const STOP_QUIT: u8 = 1;
 const STOP_CLOSED: u8 = 2;
+/// After quit, try the error line and RESTORE only this long. A client that
+/// stays up with a zero window never sends WINDOW_ADJUST, and russh 0.54
+/// does not wake a blocked channel write on close.
+const QUIT_TAIL_WAIT: Duration = Duration::from_secs(1);
 
 pub async fn load_host_key(path: &Path) -> anyhow::Result<russh::keys::PrivateKey> {
     russh::keys::load_secret_key(path, None)
@@ -325,7 +329,7 @@ impl Drop for PumpInflight {
 
 /// russh's channel writer waits on a notify that 0.54 fires only for
 /// WINDOW_ADJUST. Close and a dropped peer do not wake it, so every
-/// windowed write races `stop`. A closed channel skips the restore write.
+/// windowed write races `stop`. A closed channel skips the tail write.
 async fn write_bytes(channel: &russh::ChannelWriteHalf<Msg>, bytes: &[u8]) -> Result<(), String> {
     let mut writer = channel.make_writer();
     writer
@@ -359,18 +363,36 @@ async fn write_while_live(
     }
 }
 
+/// `deadline` is set only when the tail begins in STOP_QUIT. STOP_LIVE waits
+/// for window space (that client is still reading). STOP_CLOSED skips the write.
 async fn write_if_open(
     channel: &russh::ChannelWriteHalf<Msg>,
     bytes: &[u8],
     stop: &mut watch::Receiver<u8>,
+    deadline: Option<tokio::time::Instant>,
 ) -> bool {
     if *stop.borrow() == STOP_CLOSED {
         return false;
     }
-    tokio::select! {
-        biased;
-        _ = wait_until(stop, |state| state == STOP_CLOSED) => false,
-        result = write_bytes(channel, bytes) => result.is_ok(),
+    let write = write_bytes(channel, bytes);
+    tokio::pin!(write);
+    if let Some(deadline) = deadline {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return false;
+        }
+        tokio::select! {
+            biased;
+            _ = wait_until(stop, |state| state == STOP_CLOSED) => false,
+            result = &mut write => result.is_ok(),
+            _ = tokio::time::sleep(remaining) => false,
+        }
+    } else {
+        tokio::select! {
+            biased;
+            _ = wait_until(stop, |state| state == STOP_CLOSED) => false,
+            result = &mut write => result.is_ok(),
+        }
     }
 }
 
@@ -383,14 +405,19 @@ async fn pump(
     mut stop: watch::Receiver<u8>,
 ) {
     let failure = play(&channel, &movie, &cache, cols, rows, &mut stop).await;
+    let tail_deadline = if *stop.borrow() == STOP_QUIT {
+        Some(tokio::time::Instant::now() + QUIT_TAIL_WAIT)
+    } else {
+        None
+    };
     if *stop.borrow() != STOP_CLOSED {
         if let Err(message) = failure {
             let err = format!("\r\n\x1b[0mstream error: {message}\x1b[0m\r\n");
-            let _ = write_if_open(&channel, err.as_bytes(), &mut stop).await;
+            let _ = write_if_open(&channel, err.as_bytes(), &mut stop, tail_deadline).await;
         }
     }
     if *stop.borrow() != STOP_CLOSED {
-        let _ = write_if_open(&channel, RESTORE, &mut stop).await;
+        let _ = write_if_open(&channel, RESTORE, &mut stop, tail_deadline).await;
     }
     if *stop.borrow() != STOP_CLOSED {
         tokio::select! {
@@ -490,10 +517,12 @@ pub async fn serve(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::Ordering;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
 
+    use russh::client::Handle;
     use russh::server::Server;
     use tokio::net::TcpListener;
 
@@ -515,9 +544,26 @@ mod tests {
         }
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn stalled_window_drop_finishes_the_pump() {
-        let dir = std::env::temp_dir().join(format!("bootleg-stall-{}", std::process::id()));
+    struct StalledShell {
+        server: tokio::task::JoinHandle<()>,
+        pumps: Arc<AtomicUsize>,
+        session: Option<Handle<AcceptKey>>,
+        channel: Option<russh::Channel<russh::client::Msg>>,
+        dir: PathBuf,
+    }
+
+    impl Drop for StalledShell {
+        fn drop(&mut self) {
+            self.server.abort();
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    /// Client receive window stays 0, so the server blocks in the first write.
+    /// The TCP session is still up when this returns.
+    async fn open_stalled_shell(label: &str) -> StalledShell {
+        let dir =
+            std::env::temp_dir().join(format!("bootleg-stall-{}-{}", std::process::id(), label));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let key_path = dir.join("host_key");
@@ -611,8 +657,21 @@ mod tests {
             "pump exited while the window was closed"
         );
 
-        drop(channel);
-        drop(session);
+        StalledShell {
+            server,
+            pumps,
+            session: Some(session),
+            channel: Some(channel),
+            dir,
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stalled_window_drop_finishes_the_pump() {
+        let mut live = open_stalled_shell("drop").await;
+        let pumps = Arc::clone(&live.pumps);
+        drop(live.channel.take());
+        drop(live.session.take());
 
         let finished = tokio::time::timeout(Duration::from_secs(2), async {
             while pumps.load(Ordering::Acquire) != 0 {
@@ -625,7 +684,45 @@ mod tests {
             "pump still running after the client dropped: {}",
             pumps.load(Ordering::Acquire)
         );
-        server.abort();
-        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stalled_window_quit_finishes_the_pump() {
+        let live = open_stalled_shell("quit").await;
+        let pumps = Arc::clone(&live.pumps);
+        let channel = live.channel.as_ref().expect("channel");
+        let session = live.session.as_ref().expect("session");
+
+        tokio::time::timeout(Duration::from_secs(2), channel.data(&b"q"[..]))
+            .await
+            .expect("quit send timed out")
+            .expect("quit");
+
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        assert!(
+            !session.is_closed(),
+            "client session closed before the pump finished"
+        );
+        assert_eq!(
+            pumps.load(Ordering::Acquire),
+            1,
+            "pump exited before the bounded restore wait"
+        );
+
+        let finished = tokio::time::timeout(Duration::from_secs(3), async {
+            while pumps.load(Ordering::Acquire) != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        assert!(
+            finished.is_ok(),
+            "pump still running after quit while the client stayed connected: {}",
+            pumps.load(Ordering::Acquire)
+        );
+        assert!(
+            !session.is_closed(),
+            "pump only finished because the client session closed"
+        );
     }
 }
