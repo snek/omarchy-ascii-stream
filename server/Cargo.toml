@@ -6,9 +6,11 @@ license = "MIT"
 publish = false
 
 [dependencies]
+anyhow = "1"
 bytes = "1"
 libc = "0.2"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util"] }
+russh = "0.54"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util", "net"] }
 
 [dev-dependencies]
 proptest = "1"
