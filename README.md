@@ -20,6 +20,18 @@ session starts from the beginning of the clip and loops.
 
 Inspired by [ascii.theater](https://ascii.theater).
 
+## One-shot player
+
+`bootleg-play` is a separate binary. It does not serve SSH.
+
+```bash
+cargo build -p bootleg-play --release
+./target/release/bootleg-play export --video clip.mp4 -o intro
+./intro
+```
+
+`intro` plays the clip once in this terminal and exits. Copy that file onto a machine that has no ffmpeg. `docs/examples/bootleg-play.tty1.service` is an example oneshot that runs it on tty1 before getty. `/opt/bootleg-intro` in that unit is the path you chose for the exported file.
+
 ## Deploy on a VPS
 
 You need Docker Compose and a video file you have the right to stream.

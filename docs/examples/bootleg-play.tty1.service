@@ -1,0 +1,16 @@
+[Unit]
+Description=Play a bootleg clip once on tty1
+Before=getty@tty1.service
+After=systemd-vconsole-setup.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/bootleg-intro
+StandardInput=tty
+StandardOutput=tty
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+
+[Install]
+WantedBy=multi-user.target
